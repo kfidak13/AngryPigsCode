@@ -9,10 +9,16 @@ Open `index.html` in a browser (or serve the folder, e.g.
 `python3 -m http.server`). Drag the pig back from the slingshot and release
 to launch.
 
-There are 8 levels, each harder than the last. Clear a level to unlock
-**Next level**; run out of pigs and you can **Retry**.
+**Click while the pig is flying to dash** — one boost per pig.
 
-- `Enter` presses the end-card button, `R` restarts the current level.
+There are 8 levels, each harder than the last; clearing one unlocks the next.
+Every level is rated 1–3 stars: you get a star for clearing it plus one per
+spare pig, so one-shotting a 3-pig level earns all three. Breaking blocks
+and knocking out birds scores points, and spare pigs are worth 10,000 each.
+Stars and best scores are saved in the browser.
+
+- `Enter` presses the end-card's main button, `R` restarts the current level,
+  `Esc` (or the **Levels** button) opens the level select.
 - Jump to a level with the URL hash, e.g. `index.html#5`.
 
 ## Difficulty
