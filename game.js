@@ -333,22 +333,33 @@
     sling.stiffness = DRAG_STIFFNESS;
   });
 
-  Events.on(mouseConstraint, 'enddrag', (e) => {
-    if (e.body === pig && !launched) {
-      sling.stiffness = ELASTIC_STIFFNESS;
-      const pullVec = Vector.sub(pig.position, SLING_POINT);
-      if (Vector.magnitude(pullVec) > MIN_PULL) {
-        launched = true;
-        pigsLeft--;
-        releaseDir = Vector.normalise(pullVec);
-        releaseAt = engine.timing.timestamp;
-        shotStartAt = engine.timing.timestamp;
-      }
+  // Let go of the pulled pig: the elastic flings it unless the pull was tiny
+  function releasePig() {
+    sling.stiffness = ELASTIC_STIFFNESS;
+    const pullVec = Vector.sub(pig.position, SLING_POINT);
+    if (Vector.magnitude(pullVec) > MIN_PULL) {
+      launched = true;
+      pigsLeft--;
+      releaseDir = Vector.normalise(pullVec);
+      releaseAt = engine.timing.timestamp;
+      shotStartAt = engine.timing.timestamp;
     }
+  }
+
+  Events.on(mouseConstraint, 'enddrag', (e) => {
+    if (e.body === pig && !launched) releasePig();
   });
 
+  const isAiming = () => pig && !launched && (mouseConstraint.body === pig || joystickAiming());
+
   function clampPull() {
-    if (pig && !launched && mouseConstraint.body === pig) {
+    if (joystickAiming()) {
+      // The stick position is the pull: full tilt = PULL_LIMIT
+      const tilt = { x: joystick.x, y: joystick.y };
+      const amount = Math.min(1, Vector.magnitude(tilt));
+      Body.setPosition(pig, Vector.add(SLING_POINT, Vector.mult(Vector.normalise(tilt), amount * PULL_LIMIT)));
+      Body.setVelocity(pig, { x: 0, y: 0 });
+    } else if (pig && !launched && mouseConstraint.body === pig) {
       const offset = Vector.sub(pig.position, SLING_POINT);
       const dist = Vector.magnitude(offset);
       if (dist > PULL_LIMIT) {
@@ -528,7 +539,7 @@
   // --- Dash: one click mid-flight boosts the pig forward ---
   const DASH_MIN_SPEED = 20;
   const DASH_MAX_SPEED = 45;
-  render.canvas.addEventListener('pointerdown', () => {
+  function dash() {
     if (!pig || !launched || slingAttached || pig.dashed || gameOver) return;
     pig.dashed = true;
     const speed = Vector.magnitude(pig.velocity);
@@ -537,7 +548,82 @@
     Body.setVelocity(pig, Vector.mult(Vector.normalise(pig.velocity), newSpeed));
     spawnDashBurst(pig);
     shake = Math.max(shake, 4);
-  });
+  }
+  render.canvas.addEventListener('pointerdown', dash);
+
+  // --- Arduino joystick over Web Serial (Chrome / Edge only) ---
+  // The sketch in arduino/joystick sends "x,y,button" lines, x and y from -100 to 100.
+  // Tilt the stick to pull the pig back, press it to fire, press again mid-flight to dash.
+  const JOYSTICK_BAUD = 115200;
+  const joystick = { connected: false, x: 0, y: 0, pressed: false };
+  const joystickBtn = document.getElementById('joystick-btn');
+
+  function joystickAiming() {
+    return joystick.connected && !gameOver && pig && !launched && slingAttached
+      && mouseConstraint.body !== pig && (joystick.x !== 0 || joystick.y !== 0);
+  }
+
+  function onJoystickPress() {
+    if (gameOver) {
+      // Same as Enter on a card; on the level select, play the level behind it
+      const primary = messageEl.querySelector('button.primary');
+      if (primary) primary.click();
+      else loadLevel(levelIndex);
+    } else if (joystickAiming()) {
+      releasePig();
+    } else {
+      dash();
+    }
+  }
+
+  function onJoystickLine(line) {
+    const [x, y, button] = line.trim().split(',').map(Number);
+    if ([x, y, button].some(Number.isNaN)) return; // half a line right after connecting
+    joystick.x = x / 100;
+    joystick.y = y / 100;
+    const pressed = button === 1;
+    if (pressed && !joystick.pressed) onJoystickPress();
+    joystick.pressed = pressed;
+  }
+
+  async function connectJoystick() {
+    let port;
+    try {
+      port = await navigator.serial.requestPort();
+      await port.open({ baudRate: JOYSTICK_BAUD });
+    } catch (e) {
+      if (e.name !== 'NotFoundError') { // NotFoundError = picker cancelled
+        alert(`Couldn't open the joystick: ${e.message}\nClose the Arduino IDE Serial Monitor (only one app can use the port) and try again.`);
+      }
+      return;
+    }
+    joystick.connected = true;
+    joystickBtn.textContent = '🕹 Connected';
+    joystickBtn.disabled = true;
+    const reader = port.readable.pipeThrough(new TextDecoderStream()).getReader();
+    let buffered = '';
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffered += value;
+        const lines = buffered.split('\n');
+        buffered = lines.pop();
+        lines.forEach(onJoystickLine);
+      }
+    } catch (e) {
+      // Unplugged or reset: fall through and offer to reconnect
+    } finally {
+      Object.assign(joystick, { connected: false, x: 0, y: 0, pressed: false });
+      joystickBtn.textContent = '🕹 Connect joystick';
+      joystickBtn.disabled = false;
+      reader.releaseLock();
+      port.close().catch(() => {});
+    }
+  }
+
+  if ('serial' in navigator) joystickBtn.onclick = connectJoystick;
+  else joystickBtn.remove();
 
   // --- Aim preview ---
   function predictedPath() {
@@ -955,7 +1041,7 @@
   // --- Pig ---
   function drawPig(ctx) {
     const { x, y } = pig.position;
-    const dragging = !launched && mouseConstraint.body === pig;
+    const dragging = isAiming();
     const pull = Vector.sub(pig.position, SLING_POINT);
     const pullLen = Vector.magnitude(pull);
 
@@ -1386,7 +1472,7 @@
     updateAndDrawParticles(ctx, dt);
 
     // Short dotted aim preview while dragging
-    if (pig && !launched && mouseConstraint.body === pig
+    if (isAiming()
         && Vector.magnitude(Vector.sub(pig.position, SLING_POINT)) > MIN_PULL) {
       const pts = predictedPath();
       pts.forEach((p, i) => {
